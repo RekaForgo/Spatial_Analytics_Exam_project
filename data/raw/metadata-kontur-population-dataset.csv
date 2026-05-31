@@ -1,0 +1,124 @@
+Field,Label,Value
+id,Dataset ID,38f46aa9-00dd-4ac9-98c9-5ecaea384c9f
+title,Title of Dataset,Kontur Population: Global Population Density for 400m H3 Hexagons
+name,Dataset URL,kontur-population-dataset
+notes,Description,"Global Population dataset. Vector H3 hexagons with population counts at 400m resolution. <ul> <li>Per-country subsets of Kontur Population can be found here: <a href=""https://data.humdata.org/organization/kontur"">data.humdata.org/organization/kontur</a>  </li> <li>3km resolution version: <a href=""https://data.humdata.org/dataset/kontur-population-dataset-3km"">data.humdata.org/dataset/kontur-population-dataset-3km</a></li> <li>22km resolution version: <a href=""https://data.humdata.org/dataset/kontur-population-dataset-22km"">data.humdata.org/dataset/kontur-population-dataset-22km</a></li> </ul>  Fixed up fusion of GHSL, Facebook, Microsoft Buildings, Copernicus Global Land Service Land Cover, Land Information New Zealand, and OpenStreetMap data."
+dataset_source,Source,Kontur
+organization,Contributor,Kontur
+dataset_date,Reference Period,[2020-03-11T00:00:00 TO 2023-11-01T23:59:59]
+last_modified,Updated,2023-10-31T17:26:03.680913
+data_update_frequency,Expected Update Frequency,As needed
+groups,Location,World
+license_title,License,Creative Commons Attribution International (CC BY)
+methodology,Methodology,Other
+methodology_other,Define Methodology," Kontur Population dataset was built based on [H3: Hexagonal Hierarchical Spatial Index](https://h3geo.org).
+
+Calculating population is based on overlapping Global Human Settlement Layer ([GHSL](https://ghsl.jrc.ec.europa.eu)) with Facebook High Resolution Settlement Layer ([HRSL](https://research.facebook.com/downloads/high-resolution-settlement-layer-hrsl)) population data where available.
+
+Known artifacts of both datasets are constrained using OpenStreetMap data as a hint. Quarries and big roads are marked unpopulated, as they are often falsely detected as populated in GHSL. Lakes, rivers, glaciers, sands, forests, and other similar areas are also marked as unpopulated.
+
+We use Microsoft Building Footprint data, Land Information New Zealand and Copernicus Global Land Service: Land Cover 100m to improve the accuracy of population distribution.
+
+Building presence, or otherwise built-up area, implies there’s someone on the ground, which is often missed in HRSL data for Africa.
+
+We use scale coefficient taking into account the nesting of levels of administrative division in cases when the total population of the administrative area significantly differs from the United Nations population estimates and projections.
+
+Overly hot pixels like 'half a million people in a quarter of square kilometer' are spread out to more realistic surroundings. The population is shifted to neighboring cells to satisfy constraints.
+
+Non-integer populations are fixed up by 'gluing people back together' to keep realistic human beings."
+caveats,Caveats/Comments," Dataset is primarily designed to support visualization behind https://disaster.ninja project and may not be suitable for your specific needs.
+Please contact us if you need custom processing or higher resolution version of this dataset.
+
+**Dataset codebook**:
+
+**fid** [integer]: record order in data upload
+
+**h3** [h3index/text]: H3 index of hexagon
+
+**population** [double]: total population inside hexagon
+
+**geom** [geometry]: Polygon, EPSG:3857
+
+**Global version of Kontur Population** is available at [https://data.humdata.org/organization/kontur](https://data.humdata.org/organization/kontur).
+
+Facebook High Resolution Settlement data: Facebook Connectivity Lab and Center for International Earth Science Information Network - CIESIN - Columbia University. 2016. High Resolution Settlement Layer (HRSL). Source imagery for HRSL © 2016 DigitalGlobe. Licence - Creative Commons Attribution International
+
+Global Human Settlement Layer: Dataset: Schiavina M., Freire S., Carioli A., MacManus K. (2023): GHS-POP R2023A - GHS population grid multitemporal (1975-2030).European Commission, Joint Research Centre (JRC) PID: http://data.europa.eu/89h/2ff68a52-5b5b-4a22-8f40-c41da8332cfe, doi:10.2905/2FF68A52-5B5B-4A22-8F40-C41DA8332CFE Concept & Methodology: Freire S., MacManus K., Pesaresi M., Doxsey-Whitfield E., Mills J. (2016) Development of new open and free multi-temporal global population grids at 250 m resolution. Geospatial Data in a Changing World; Association of Geographic Information Laboratories in Europe (AGILE), AGILE 2016.
+
+Copernicus Global Land Service: Land Cover 100m: Marcel Buchhorn, Bruno Smets, Luc Bertels, Bert De Roo, Myroslava Lesiv, Nandin-Erdene Tsendbazar, Martin Herold, Steffen Fritz. (2020). Copernicus Global Land Service: Land Cover 100m: collection 3: epoch 2019: Globe (Version V3.0.1) [Data set]. Zenodo. http://doi.org/10.5281/zenodo.3939050
+
+Microsoft Buildings: This data is licensed by Microsoft under the [Open Data Commons Open Database License](https://opendatacommons.org/licenses/odbl) (ODbL).
+
+Land Information New Zealand (LINZ) NZ Building Outlines: sourced from the sourced from the [LINZ Data Service](https://data.linz.govt.nz) licensed for reuse under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0).
+
+OpenStreetMap: Some data (c) OpenStreetMap.org Contributors [Open Data Commons Open Database License](https://opendatacommons.org/licenses/odbl) (ODbL)
+
+Geoalert Urban Mapping: Chechnya, Moscow region, Tyva, Tashkent, Bukhara, Samarkand, Navoi, Chirchiq - https://github.com/Geoalert/urban-mapping (ODbL).
+
+[World Population Prospects, 2023 Revision](https://population.un.org/wpp/). United Nations Department of Economic and Social Affairs, Population Division, Population Estimates and Projections Section. 11 July 2022. Retrieved 10 February 2023."
+tags,Tags,"baseline population, geodata, population"
+resource_1_created,Created,2023-10-31T17:26:03.697163
+resource_1_description,Description,400m global hexagon population grid. Values represent number of people in cell. Release 2023-11-01.
+resource_1_format,File Format,Geopackage
+resource_1_download_url,Download URL,https://geodata-eu-central-1-kontur-public.s3.eu-central-1.amazonaws.com/kontur_datasets/kontur_population_20231101.gpkg.gz
+resource_1_id,Resource ID,78688126-f729-41b5-ac79-195598dbfad7
+resource_1_last_modified,Updated,2023-10-31T17:26:03.680913
+resource_1_metadata_modified,Metadata Updated,2025-08-26T12:24:27.705527
+resource_1_microdata,Microdata,False
+resource_1_dataset_id,Dataset ID,38f46aa9-00dd-4ac9-98c9-5ecaea384c9f
+resource_1_resource_type,Resource Type,api
+resource_1_name,Resource Name,kontur_population_20231101.gpkg.gz
+resource_1_mimetype,MIME Type,
+resource_1_size,Size,2.3G
+resource_2_created,Created,2022-06-30T13:47:09.989885
+resource_2_description,Description,400m global hexagon population grid. Values represent number of people in cell. Release 2022-06-30.
+resource_2_format,File Format,Geopackage
+resource_2_download_url,Download URL,https://geodata-eu-central-1-kontur-public.s3.amazonaws.com/kontur_datasets/kontur_population_20220630.gpkg.gz
+resource_2_id,Resource ID,a15087af-9f85-4679-a243-ece3437af25e
+resource_2_last_modified,Updated,2022-06-30T13:47:09.969876
+resource_2_metadata_modified,Metadata Updated,2025-08-26T12:24:27.705649
+resource_2_microdata,Microdata,False
+resource_2_dataset_id,Dataset ID,38f46aa9-00dd-4ac9-98c9-5ecaea384c9f
+resource_2_resource_type,Resource Type,api
+resource_2_name,Resource Name,kontur_population_20220630.gpkg.gz
+resource_2_mimetype,MIME Type,
+resource_2_size,Size,1.6G
+resource_3_created,Created,2021-11-10T12:44:17.492783
+resource_3_description,Description,400m global hexagon population grid. Values represent number of people in cell. Release 2021-11-09.
+resource_3_format,File Format,Geopackage
+resource_3_download_url,Download URL,https://data.humdata.org/dataset/38f46aa9-00dd-4ac9-98c9-5ecaea384c9f/resource/5973b5fc-44dd-468a-b216-b39a9bbd162f/download/kontur_population_20211109.gpkg.gz
+resource_3_id,Resource ID,5973b5fc-44dd-468a-b216-b39a9bbd162f
+resource_3_last_modified,Updated,2021-11-10T12:44:17.130111
+resource_3_metadata_modified,Metadata Updated,2022-06-30T13:47:09.969141
+resource_3_microdata,Microdata,False
+resource_3_dataset_id,Dataset ID,38f46aa9-00dd-4ac9-98c9-5ecaea384c9f
+resource_3_resource_type,Resource Type,file.upload
+resource_3_name,Resource Name,kontur_population_20211109.gpkg.gz
+resource_3_mimetype,MIME Type,application/x-gzip
+resource_3_size,Size,1.2G
+resource_4_created,Created,2020-09-28T17:46:47.232425
+resource_4_description,Description,400m global hexagon population grid. Values represent number of people in cell. Release 2020-09-28.
+resource_4_format,File Format,Geopackage
+resource_4_download_url,Download URL,https://adhoc.kontur.io/data/kontur_population_20200928.gpkg.gz
+resource_4_id,Resource ID,2500aa78-cac3-45ac-b4e7-7dac97bf839a
+resource_4_last_modified,Updated,2020-09-28T17:46:47.146367
+resource_4_metadata_modified,Metadata Updated,2025-12-29T09:23:44.414280
+resource_4_microdata,Microdata,False
+resource_4_dataset_id,Dataset ID,38f46aa9-00dd-4ac9-98c9-5ecaea384c9f
+resource_4_resource_type,Resource Type,api
+resource_4_name,Resource Name,kontur_population_20200928.gpkg.gz
+resource_4_mimetype,MIME Type,
+resource_4_size,Size,0.0B
+resource_5_created,Created,2020-03-11T18:04:00.892182
+resource_5_description,Description,400m global hexagon population grid. Values represent number of people in cell. Release 2020-03-11.
+resource_5_format,File Format,Geopackage
+resource_5_download_url,Download URL,https://data.humdata.org/dataset/38f46aa9-00dd-4ac9-98c9-5ecaea384c9f/resource/44ce1193-2ee7-4228-8756-f01360400050/download/kontur_population.gpkg.gz
+resource_5_id,Resource ID,44ce1193-2ee7-4228-8756-f01360400050
+resource_5_last_modified,Updated,2020-03-11T18:03:59.981959
+resource_5_metadata_modified,Metadata Updated,2025-04-09T16:35:38.087809
+resource_5_microdata,Microdata,False
+resource_5_dataset_id,Dataset ID,38f46aa9-00dd-4ac9-98c9-5ecaea384c9f
+resource_5_resource_type,Resource Type,file.upload
+resource_5_name,Resource Name,kontur_population_20200311.gpkg.gz
+resource_5_mimetype,MIME Type,application/gzip
+resource_5_size,Size,797.9M

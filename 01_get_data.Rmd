@@ -1,0 +1,230 @@
+---
+title: "01 Get Data — Spatial Equity of Social Infrastructure in Aarhus"
+author: "Réka Forgó"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  rmdformats::readthedown:
+    highlight: kate
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+library(knitr); library(rmdformats)
+opts_chunk$set(echo = TRUE, cache = FALSE, prompt = FALSE,
+               tidy = TRUE, comment = NA, message = FALSE, warning = FALSE)
+opts_knit$set(width = 75)
+```
+
+```{r libraries}
+# Assumes 00_setup.Rmd ran in this session. Stand-alone fallback:
+if (!"sf" %in% loadedNamespaces()) {
+  library(pacman)
+  p_load(sf, tidyverse, here, osmdata, sfarrow, mapview)
+}
+crs_wgs <- 4326
+crs_dk  <- 25832
+
+# Compute-if-missing helper: run the expensive step once, then read from disk.
+cache_rds <- function(path, compute) {
+  if (file.exists(path)) return(readRDS(path))
+  obj <- compute(); saveRDS(obj, path); obj
+}
+```
+
+# Purpose
+
+Acquire and cache the raw inputs, then write tidy intermediates to
+`data/processed/`. Every download/Overpass call is guarded so a rerun skips it.
+Re-running this script needs internet; reproducing the *analysis* does not (use
+the Release data instead).
+
+Sources: Aarhus Kommune open data (lokalsamfund); Kontur Population Dataset
+(2023-11-01); OpenStreetMap via Overpass.
+
+# 1. Aarhus boundary and districts
+
+```{r download-lokalsamfund}
+geojson_path <- here("data/raw/lokalsamfund_aarhus.geojson")
+if (!file.exists(geojson_path)) {
+  download.file(
+    "https://webkort.aarhuskommune.dk/spatialmap?page=get_geojson_opendata&datasource=lokalsamfund",
+    destfile = geojson_path, mode = "wb")
+}
+```
+
+```{r districts}
+districts <- cache_rds(here("data/processed/districts.rds"), function() {
+  read_sf(geojson_path) %>% st_transform(crs_dk)
+})
+
+aarhus_mun <- cache_rds(here("data/processed/aarhus_mun.rds"), function() {
+  # Union of districts, so the boundary is topologically consistent with the
+  # aggregation unit.
+  districts %>% st_union() %>% st_sf(name = "Aarhus Kommune", geometry = .)
+})
+
+mapview(districts, zcol = "distrikt", alpha = 0.3)
+```
+
+# 2. Population grid (Kontur, 400 m H3 hexagons)
+
+The raw Kontur GeoPackage is large and is not downloaded here. Place
+`kontur_population_DK_20231101.gpkg` in `data/raw/` (link in the README), or
+take `kontur_aarhus.rds` from the Release.
+
+```{r kontur-clip-aggregate}
+kontur_path <- here("data/raw/kontur_population_DK_20231101.gpkg")
+
+kontur_aarhus <- cache_rds(here("data/processed/kontur_aarhus.rds"), function() {
+  if (!file.exists(kontur_path))
+    stop("Missing Kontur gpkg in data/raw/ — see README, or use Release data.")
+
+  kontur <- st_read(kontur_path, quiet = TRUE) %>% st_transform(crs_dk)
+
+  # Centroid-in-polygon join: each hex goes to exactly one district (no
+  # border double-counting that st_intersection would create).
+  hex_to_district <- kontur %>%
+    st_centroid() %>%
+    st_join(select(districts, distrikt), join = st_within) %>%
+    st_drop_geometry() %>%
+    select(h3, distrikt) %>%
+    filter(!is.na(distrikt))
+
+  kontur %>% inner_join(hex_to_district, by = "h3")
+})
+
+districts_pop <- cache_rds(here("data/processed/districts_pop.rds"), function() {
+  kontur_aarhus %>% st_drop_geometry() %>%
+    group_by(distrikt) %>%
+    summarise(pop_kontur = sum(population, na.rm = TRUE), .groups = "drop")
+})
+
+# Quick check vs official Statbank FOLK1A (366,968 at 2023Q4, the Kontur vintage)
+cat("Kontur total:", sum(kontur_aarhus$population),
+    "| ratio to Statbank:", round(sum(kontur_aarhus$population) / 366968, 3), "\n")
+```
+
+# 3. OSM "third places"
+
+Five categories: parks, libraries, cafés, fitness centres, community centres.
+Non-park POIs are kept as points; parks are kept as polygons (distance is to the
+park edge, computed in `02`).
+
+```{r poi-setup}
+bbox_wgs <- aarhus_mun %>% st_transform(crs_wgs) %>% st_bbox()
+
+third_place_queries <- tribble(
+  ~category,          ~osm_key,  ~osm_value,
+  "park",             "leisure", "park",
+  "library",          "amenity", "library",
+  "cafe",             "amenity", "cafe",
+  "fitness_centre",   "leisure", "fitness_centre",
+  "community_centre", "amenity", "community_centre")
+
+fetch_third_place <- function(category, osm_key, osm_value, bbox_wgs, boundary_dk) {
+  q <- opq(bbox_wgs, timeout = 120) %>%
+    add_osm_feature(key = osm_key, value = osm_value) %>%
+    osmdata_sf()
+
+  standardize <- function(x, type, key, value) {
+    if (is.null(x) || nrow(x) == 0) return(NULL)
+    if (type == "point" && key %in% names(x)) {
+      x <- x[!is.na(x[[key]]) & x[[key]] == value, , drop = FALSE]
+      if (nrow(x) == 0) return(NULL)
+    }
+    nm <- if ("name" %in% names(x)) x$name else NA_character_
+    out <- st_sf(osm_id = x$osm_id, name = nm, geom_origin = type,
+                 geometry = st_geometry(x)) %>% st_transform(crs_dk)
+    if (type %in% c("polygon", "multipolygon"))
+      out <- suppressWarnings(st_point_on_surface(out))
+    out
+  }
+
+  combined <- bind_rows(
+    standardize(q$osm_points,        "point",        osm_key, osm_value),
+    standardize(q$osm_polygons,      "polygon",      osm_key, osm_value),
+    standardize(q$osm_multipolygons, "multipolygon", osm_key, osm_value))
+  if (is.null(combined) || nrow(combined) == 0) return(NULL)
+
+  combined %>% mutate(category = category, .before = 1) %>%
+    st_filter(boundary_dk, .predicate = st_intersects)
+}
+
+# De-duplicate POIs within 25 m of each other in the same category
+# (single-linkage clustering, keep the named member).
+dedup_pois <- function(x, threshold = 25) {
+  if (nrow(x) <= 1) return(x)
+  d <- st_distance(x); units(d) <- NULL
+  cl <- cutree(hclust(as.dist(d), method = "single"), h = threshold)
+  x %>% mutate(.cluster = cl) %>%
+    group_by(.cluster) %>% arrange(is.na(name), .by_group = TRUE) %>%
+    slice(1) %>% ungroup() %>% select(-.cluster)
+}
+```
+
+```{r poi-fetch}
+pois <- cache_rds(here("data/processed/pois.rds"), function() {
+  raw <- third_place_queries %>%
+    pmap(function(category, osm_key, osm_value)
+      fetch_third_place(category, osm_key, osm_value, bbox_wgs, aarhus_mun)) %>%
+    compact() %>% bind_rows()
+  raw %>% group_split(category) %>% map_dfr(dedup_pois)
+})
+
+pois %>% st_drop_geometry() %>% count(category)
+```
+
+```{r parks-polygons}
+parks_polygons <- cache_rds(here("data/processed/parks_polygons.rds"), function() {
+  parks_raw <- opq(bbox_wgs, timeout = 240) %>%
+    add_osm_features(features = list("leisure" = "park",
+                                     "landuse" = "forest",
+                                     "natural" = "wood")) %>%
+    osmdata_sf()
+  bind_rows(
+    parks_raw$osm_polygons      %>% select(any_of(c("osm_id", "name"))),
+    parks_raw$osm_multipolygons %>% select(any_of(c("osm_id", "name")))) %>%
+    st_transform(crs_dk) %>%
+    st_filter(aarhus_mun, .predicate = st_intersects) %>%
+    mutate(area_m2 = as.numeric(st_area(geometry)))
+})
+```
+
+```{r poi-visual}
+mapview(aarhus_mun, alpha.regions = 0.05, col.regions = "grey") +
+  mapview(pois, zcol = "category", layer.name = "Third places")
+```
+
+# 4. OSM walking network
+
+Standard pedestrian network (Boeing 2017): all `highway` features minus
+motorways/trunks and non-walkable tags. A 500 m buffer keeps edge connectivity.
+
+```{r walk-network}
+walk_path <- here("data/processed/aarhus_walk_network.parquet")
+not_walkable <- c("motorway", "motorway_link", "trunk", "trunk_link",
+                  "proposed", "construction", "abandoned", "platform", "raceway")
+
+if (!file.exists(walk_path)) {
+  streets_all <- opq(bbox_wgs, timeout = 240) %>%
+    add_osm_feature(key = "highway") %>%
+    osmdata_sf() %>% osm_poly2line()
+
+  walk_network <- streets_all$osm_lines %>%
+    filter(!highway %in% not_walkable) %>%
+    st_transform(crs_dk) %>%
+    st_filter(st_buffer(aarhus_mun, 500), .predicate = st_intersects) %>%
+    select(osm_id, name, highway, geometry)
+
+  sfarrow::st_write_parquet(walk_network, walk_path)
+}
+
+walk_network <- sfarrow::st_read_parquet(walk_path)
+cat("Walk-network edges:", nrow(walk_network), "\n")
+```
+
+# Outputs
+
+`data/processed/` now holds: `districts.rds`, `aarhus_mun.rds`,
+`kontur_aarhus.rds`, `districts_pop.rds`, `pois.rds`, `parks_polygons.rds`,
+`aarhus_walk_network.parquet`. Continue in `02_analysis.Rmd`.

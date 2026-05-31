@@ -1,0 +1,100 @@
+Kontur total: 303439 | ratio to Statbank: 0.827 
+
+category
+<chr>
+n
+<int>
+cafe	204			
+community_centre	127			
+fitness_centre	45			
+library	23			
+park	311			
+
+Walk-network edges: 60610 
+Network nodes (largest component): 83019 
+
+category
+<chr>
+median_snap
+<dbl>
+n_far_off
+<int>
+cafe	17.1	1		
+community_centre	18.7	0		
+fitness_centre	19.6	0		
+library	17.5	0	
+
+Hexes within 400 m of a park edge: 82 %
+Hexes within 800 m of a park edge: 94.7 %
+
+category
+<chr>
+distance_m
+<dbl>
+pct_pop_covered_network
+<dbl>
+pct_pop_covered_eucl
+<dbl>
+diff_pp
+<dbl>
+cafe	400	22.6	33.3	10.7
+cafe	800	46.9	64.3	17.4
+community_centre	400	19.6	32.0	12.4
+community_centre	800	51.2	68.1	16.9
+fitness_centre	400	10.4	18.0	7.6
+fitness_centre	800	25.9	42.5	16.6
+library	400	2.3	7.5	5.2
+library	800	16.6	26.9	10.3
+park	400	85.3	96.0	10.7
+park	800	98.7	99.6	0.9
+
+
+composite_count
+<dbl>
+n
+<int>
+pct
+<dbl>
+0	41	5.2		
+1	546	69.4		
+2	112	14.2		
+3	52	6.6		
+4	30	3.8		
+5	6	0.8	
+
+ cafe community_centre   fitness_centre          library             park 
+             204              127               45               23              311 
+             
+
+category
+<chr>
+coef_pop_sd
+<dbl>
+rate_ratio_per_sd
+<dbl>
+z
+<dbl>
+p_value
+<dbl>
+cafe	0.834	2.30	31.49	0.00e+00
+community_centre	0.560	1.75	16.09	0.00e+00
+fitness_centre	0.780	2.18	13.46	0.00e+00
+library	0.506	1.66	5.58	2.41e-08
+park	0.549	1.73	23.84	0.00e+00
+
+Hexes with zero neighbours: 0 
+
+variable
+<chr>
+morans_I
+<dbl>
+p_MC
+<dbl>
+cov_park_800_net	0.233	0.001		
+cov_library_800_net	0.198	0.001		
+cov_cafe_800_net	0.355	0.001		
+cov_fitness_centre_800_net	0.340	0.001		
+cov_community_centre_800_net	0.369	0.001		
+composite_count	0.488	0.001		
+
+

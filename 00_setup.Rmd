@@ -1,0 +1,90 @@
+---
+title: "00 Setup — Spatial Equity of Social Infrastructure in Aarhus"
+author: "Réka Forgó"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  rmdformats::readthedown:
+    highlight: kate
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+library(rmdformats)
+opts_chunk$set(echo = TRUE, cache = FALSE, prompt = FALSE,
+               tidy = TRUE, comment = NA, message = FALSE, warning = FALSE)
+opts_knit$set(width = 75)
+```
+
+# Purpose
+
+Environment setup: create the folder structure, load packages, and fix the CRS
+conventions. Run once at the start of a session, then move to `01_get_data.Rmd`.
+
+Reproduction note: to re-run the analysis without re-downloading anything, take
+the processed data from the GitHub Release, unzip it into `data/processed/`,
+and knit `02_analysis.Rmd`. Script `01` is only needed to rebuild that data
+from source.
+
+# 1. Project structure
+
+```{r project-structure}
+library(here)
+library(fs)
+library(purrr)
+
+required_dirs <- c("data/raw", "data/processed", "R",
+                   "output/figures", "output/maps", "report")
+walk(required_dirs, ~ dir_create(here(.x)))
+dir_tree(here(), recurse = 1)
+```
+
+# 2. Packages
+
+```{r install-pacman, eval = FALSE}
+install.packages("pacman")
+```
+
+```{r packages}
+library(pacman)
+p_load(sf, tidyverse, here, fs,
+       osmdata, sfarrow,            # acquisition
+       sfnetworks, tidygraph, units, # network distances
+       spatstat, spdep,             # point patterns + autocorrelation
+       tmap, mapview, leaflet, htmltools, htmlwidgets, # maps
+       ggrepel, scales)             # plotting helpers
+```
+
+# 3. CRS conventions
+
+| Purpose | EPSG | Name |
+|---|---|---|
+| OSM input / Leaflet output | 4326 | WGS 84 (lon/lat, degrees) |
+| All analysis (buffers, area, distance) | 25832 | ETRS89 / UTM 32N (metres) |
+
+All analysis runs in EPSG:25832; reproject to 4326 only for Leaflet.
+
+```{r crs-constants}
+crs_wgs <- 4326
+crs_dk  <- 25832
+```
+
+# 4. Sanity check
+
+```{r sanity}
+aarhus_bbox <- st_bbox(c(xmin = 9.95, ymin = 56.05, xmax = 10.35, ymax = 56.27),
+                       crs = st_crs(crs_wgs))
+aarhus_bbox_sf <- st_as_sfc(aarhus_bbox) %>% st_transform(crs_dk)
+mapview(aarhus_bbox_sf, alpha.regions = 0.1)
+```
+
+If the map lands on Aarhus, the environment is ready.
+
+# Decisions documented here
+
+- R version: `r R.version.string`
+- Analysis CRS: EPSG:25832; I/O CRS: EPSG:4326
+- Network-distance engine: `sfnetworks::st_network_cost()` on the OSM walking graph
+- Euclidean-buffer engine: `sf::st_buffer()`
+- Intermediates cached to `data/processed/`; scripts read from disk, so expensive
+  steps run once and are skipped on reruns.

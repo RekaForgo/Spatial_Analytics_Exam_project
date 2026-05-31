@@ -1,0 +1,601 @@
+---
+title: "02 Analysis — Spatial Equity of Social Infrastructure in Aarhus"
+author: "Réka Forgó"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  rmdformats::readthedown:
+    highlight: kate
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+library(knitr); library(rmdformats)
+opts_chunk$set(echo = TRUE, cache = FALSE, prompt = FALSE,
+               tidy = TRUE, comment = NA, message = FALSE, warning = FALSE,
+               fig.path = "output/figures/", dev = "png", dpi = 150)
+opts_knit$set(width = 75)
+```
+
+# Purpose
+
+Catchments, point-pattern analysis, spatial autocorrelation, a MAUP check, and
+the interactive Leaflet product. Reads only from `data/processed/` — no internet
+or API token needed. Take that folder from the GitHub Release and this script
+runs offline.
+
+Expensive steps (network build, network distances) are cached to disk and skipped
+on reruns.
+
+```{r libraries}
+library(pacman)
+p_load(sf, tidyverse, here, units, sfnetworks, tidygraph,
+       spatstat, spdep, tmap, mapview, leaflet, htmltools, htmlwidgets,
+       ggrepel, scales)
+
+crs_dk <- 25832
+fs::dir_create(here("output/figures")); fs::dir_create(here("output/maps"))
+fig_dir <- here("output/figures")   # explicit saves go here (robust across tmap/ggplot/base)
+
+cache_rds <- function(path, compute) {
+  if (file.exists(path)) return(readRDS(path))
+  obj <- compute(); saveRDS(obj, path); obj
+}
+```
+
+# 0. Load inputs
+
+```{r load}
+aarhus_mun     <- readRDS(here("data/processed/aarhus_mun.rds"))
+districts      <- readRDS(here("data/processed/districts.rds"))
+kontur_aarhus  <- readRDS(here("data/processed/kontur_aarhus.rds"))
+pois           <- readRDS(here("data/processed/pois.rds"))
+parks_polygons <- readRDS(here("data/processed/parks_polygons.rds"))
+walk_network   <- sfarrow::st_read_parquet(here("data/processed/aarhus_walk_network.parquet"))
+
+nonpark_categories <- setdiff(unique(pois$category), "park")
+
+# All inputs must be EPSG:25832
+stopifnot(all(c(st_crs(aarhus_mun)$epsg, st_crs(kontur_aarhus)$epsg,
+                st_crs(pois)$epsg, st_crs(walk_network)$epsg) == crs_dk))
+```
+
+For non-park categories distance is to the POI point; for parks it is the
+shortest distance to the park boundary, with hexes whose centroid lies inside a
+park set to 0.
+
+# 1. Routable walking network
+
+Largest connected component only, so orphaned fragments don't create infinite
+distances.
+
+```{r build-network}
+network_main <- cache_rds(here("data/processed/network_main.rds"), function() {
+  walk_lines <- walk_network %>%
+    st_cast("MULTILINESTRING") %>% st_cast("LINESTRING") %>%
+    st_make_valid() %>% filter(!st_is_empty(geometry))
+
+  net <- as_sfnetwork(walk_lines, directed = FALSE) %>%
+    convert(to_spatial_subdivision, .clean = TRUE) %>%
+    convert(to_spatial_smooth,      .clean = TRUE) %>%
+    activate("edges") %>% mutate(weight = edge_length())
+
+  comps   <- net %>% activate("nodes") %>% mutate(comp = group_components()) %>%
+    as_tibble() %>% pull(comp)
+  biggest <- as.integer(names(which.max(table(comps))))
+  net %>% activate("nodes") %>% filter(group_components() == biggest)
+})
+
+nodes_main <- network_main %>% activate("nodes") %>% st_as_sf()
+cat("Network nodes (largest component):", nrow(nodes_main), "\n")
+```
+
+```{r snap-diagnostic}
+# How far are non-park POIs from the nearest network node?
+pois_nonpark <- pois %>% filter(category != "park")
+snap_dist <- as.numeric(st_distance(
+  pois_nonpark, nodes_main[st_nearest_feature(pois_nonpark, nodes_main), ],
+  by_element = TRUE))
+
+tibble(category = pois_nonpark$category, snap_m = snap_dist) %>%
+  group_by(category) %>%
+  summarise(median_snap = round(median(snap_m), 1),
+            n_far_off   = sum(snap_m > 100), .groups = "drop")
+```
+
+# 2. Euclidean catchments (baseline)
+
+One unioned polygon per (category, distance). Non-park: buffer the points;
+park: buffer the polygons.
+
+```{r euclidean-catchments}
+distances_m <- c(400, 800)
+
+catchments_eucl <- cache_rds(here("data/processed/catchments_eucl.rds"), function() {
+  eucl_point <- function(cat, d) {
+    pois %>% filter(category == cat) %>% st_buffer(d) %>% st_union() %>%
+      st_intersection(aarhus_mun) %>%
+      st_sf(category = cat, distance_m = d, method = "euclidean", geometry = .)
+  }
+  eucl_park <- function(d) {
+    parks_polygons %>% st_buffer(d) %>% st_union() %>%
+      st_intersection(aarhus_mun) %>%
+      st_sf(category = "park", distance_m = d, method = "euclidean", geometry = .)
+  }
+  nonpark <- tidyr::crossing(category = nonpark_categories, distance_m = distances_m) %>%
+    pmap_dfr(function(category, distance_m) eucl_point(category, distance_m))
+  park <- map_dfr(distances_m, eucl_park)
+  bind_rows(nonpark, park)
+})
+
+mapview(filter(catchments_eucl, distance_m == 800), zcol = "category",
+        alpha.regions = 0.3, layer.name = "800 m Euclidean catchments")
+```
+
+# 3. Network distances and coverage flags
+
+Hex centroids are the demand points (a 400 m hex holds people up to ~230 m from
+its centroid — noted as a resolution limit).
+
+```{r hex-centroids}
+# hex_id = row order of kontur_aarhus; every downstream join reuses this order,
+# so kontur_aarhus must not be re-sorted.
+hex_pts <- kontur_aarhus %>% st_centroid() %>%
+  mutate(hex_id = row_number()) %>%
+  select(hex_id, h3, population, distrikt)
+```
+
+## 3a. Non-park categories — distance to the nearest POI point
+
+```{r network-distances-nonpark}
+nearest_nonpark <- cache_rds(here("data/processed/hex_nearest_poi_nonpark.rds"), function() {
+  nearest_dist <- function(cat) {
+    pois_cat <- pois %>% filter(category == cat)
+    cost <- st_network_cost(network_main, from = hex_pts, to = pois_cat,
+                            weights = "weight") %>% drop_units()
+    min_d <- apply(cost, 1, min, na.rm = TRUE)
+    min_d[is.infinite(min_d)] <- NA_real_
+    tibble(hex_id = hex_pts$hex_id, category = cat, dist_m = min_d)
+  }
+  map_dfr(nonpark_categories, nearest_dist)
+})
+```
+
+## 3b. Parks — distance to the boundary, not a centre point
+
+A park is an area, entered from its edge, so measuring distance to a single
+centre point would overstate how far people are from large parks. Instead each
+park boundary is sampled every ~30 m, the distance is the shortest network path
+to any of those edge points, and hexes whose centroid already sits inside a park
+are set to 0. The Euclidean catchments (§2) follow the same logic by buffering
+the polygons rather than points.
+
+```{r network-distances-park}
+nearest_park <- cache_rds(here("data/processed/hex_nearest_poi_park.rds"), function() {
+  access_pts <- parks_polygons %>%
+    mutate(park_id_src = row_number()) %>%
+    st_boundary() %>% st_cast("LINESTRING", warn = FALSE) %>%
+    group_by(park_id_src) %>% summarise(.groups = "drop") %>%
+    st_line_sample(density = 1/30) %>% st_cast("POINT") %>% st_sf()
+
+  cost_park <- st_network_cost(network_main, from = hex_pts, to = access_pts,
+                               weights = "weight") %>% drop_units()
+  min_park <- apply(cost_park, 1, min, na.rm = TRUE)
+  min_park[is.infinite(min_park)] <- NA_real_
+  min_park[lengths(st_intersects(hex_pts, parks_polygons)) > 0] <- 0
+
+  tibble(hex_id = hex_pts$hex_id, category = "park", dist_m = min_park)
+})
+
+# Park-distance sanity: how reachable are parks?
+park_d <- nearest_park$dist_m
+cat("Hexes within 400 m of a park edge:", round(100 * mean(park_d < 400, na.rm = TRUE), 1), "%\n")
+cat("Hexes within 800 m of a park edge:", round(100 * mean(park_d < 800, na.rm = TRUE), 1), "%\n")
+hist(park_d[park_d > 0 & park_d < 2000], breaks = 50,
+     main = "Distance to nearest park edge (excl. inside-park hexes)", xlab = "metres")
+```
+
+## 3c. Combine
+
+```{r combine-distances}
+nearest_long <- cache_rds(here("data/processed/hex_nearest_poi.rds"), function() {
+  bind_rows(nearest_nonpark, nearest_park)
+})
+```
+
+```{r coverage-flags}
+hex_coverage <- cache_rds(here("data/processed/hex_coverage.rds"), function() {
+  nearest_wide <- nearest_long %>%
+    pivot_wider(names_from = category, values_from = dist_m, names_prefix = "dist_")
+
+  coverage <- nearest_wide %>%
+    mutate(across(starts_with("dist_"),
+                  list(`400` = ~ .x < 400, `800` = ~ .x < 800),
+                  .names = "cov{.col}_{.fn}m")) %>%
+    rename_with(~ str_replace(.x, "dist_", ""), .cols = starts_with("covdist_"))
+
+  kontur_aarhus %>% mutate(hex_id = row_number()) %>%
+    left_join(coverage, by = "hex_id")
+})
+```
+
+# 4. Headline coverage (% population within reach)
+
+```{r coverage-table}
+total_pop <- sum(hex_coverage$population, na.rm = TRUE)
+
+coverage_summary <- hex_coverage %>% st_drop_geometry() %>%
+  summarise(across(starts_with("cov"),
+                   ~ sum(population[.x], na.rm = TRUE) / total_pop * 100)) %>%
+  pivot_longer(everything(), names_to = "metric", values_to = "pct_pop_covered") %>%
+  mutate(category   = str_extract(metric, "(?<=cov)[a-z_]+(?=_)"),
+         distance_m = as.integer(str_extract(metric, "\\d+(?=m)")),
+         pct_pop_covered = round(pct_pop_covered, 1)) %>%
+  select(category, distance_m, pct_pop_covered) %>%
+  arrange(category, distance_m)
+
+coverage_summary
+```
+
+```{r eucl-vs-network}
+hex_pts_pop <- kontur_aarhus %>% st_centroid() %>%
+  mutate(hex_id = row_number()) %>% select(hex_id, population)
+
+eucl_cov <- catchments_eucl %>% group_split(category, distance_m) %>%
+  map_dfr(function(s) {
+    inside <- st_intersects(hex_pts_pop, s, sparse = FALSE)[, 1]
+    tibble(category = s$category, distance_m = s$distance_m,
+           pct_pop_covered_eucl =
+             round(100 * sum(hex_pts_pop$population[inside], na.rm = TRUE) / total_pop, 1))
+  })
+
+comparison <- coverage_summary %>%
+  rename(pct_pop_covered_network = pct_pop_covered) %>%
+  left_join(eucl_cov, by = c("category", "distance_m")) %>%
+  mutate(diff_pp = pct_pop_covered_eucl - pct_pop_covered_network)
+
+comparison
+```
+
+# 5. Hex analysis variables
+
+Composite count = number of categories reachable within 800 m network walk (0–5).
+
+```{r hex-vars}
+composite <- nearest_long %>%
+  pivot_wider(names_from = category, values_from = dist_m, names_prefix = "dist_") %>%
+  mutate(composite_count = rowSums(across(starts_with("dist_"), ~ .x < 800), na.rm = TRUE))
+
+hex_analysis <- cache_rds(here("data/processed/hex_analysis.rds"), function() {
+  base <- hex_coverage %>% mutate(hex_id = row_number()) %>%
+    select(hex_id, h3, population, distrikt, starts_with("cov")) %>%
+    left_join(composite, by = "hex_id")
+
+  # Euclidean coverage flags (centroid-in-catchment) so the map can toggle method
+  hex_centroids <- base %>% st_centroid() %>% select(hex_id)
+  eucl_flags <- catchments_eucl %>%
+    mutate(grp = paste0("cov_", category, "_", distance_m, "_eucl")) %>%
+    group_split(grp) %>%
+    map_dfr(function(s) tibble(hex_id = hex_centroids$hex_id, grp = s$grp[1],
+                               value = lengths(st_intersects(hex_centroids, s)) > 0)) %>%
+    pivot_wider(names_from = grp, values_from = value)
+
+  base %>% left_join(eucl_flags, by = "hex_id") %>%
+    rename_with(~ str_replace(.x, "^cov([a-z_]+)_(\\d+)m$", "cov_\\1_\\2_net"),
+                .cols = matches("^cov[a-z_]+_\\d+m$"))
+})
+
+hex_analysis %>% st_drop_geometry() %>% count(composite_count) %>%
+  mutate(pct = round(100 * n / sum(n), 1))
+```
+
+# 6. Point pattern analysis — do third places cluster more than people?
+
+```{r ppa-setup}
+win <- as.owin(aarhus_mun)
+categories <- unique(pois$category)
+
+build_ppp <- function(cat_name) {
+  xy <- pois %>% filter(category == cat_name) %>% st_coordinates()
+  ppp(xy[, "X"], xy[, "Y"], window = win, check = FALSE)
+}
+ppp_list <- setNames(lapply(categories, build_ppp), categories)
+sapply(ppp_list, npoints)
+```
+
+```{r pop-surface, fig.width=8, fig.height=6}
+# Population intensity surface (people/m^2), sigma = hex apothem
+kontur_pp <- kontur_aarhus %>% st_centroid() %>%
+  { ppp(st_coordinates(.)[, "X"], st_coordinates(.)[, "Y"],
+        window = win, marks = .$population, check = FALSE) }
+pop_im <- density(kontur_pp, weights = marks(kontur_pp), sigma = 400, edge = TRUE)
+
+plot(pop_im, main = "Population intensity (people / m^2, sigma = 400 m)")
+plot(aarhus_mun$geometry, add = TRUE, border = "white", lwd = 0.5)
+```
+
+A Poisson model `ppm(pp ~ pop_im)` fits log-intensity against population
+density; a positive coefficient means the category is preferentially located
+where people live.
+
+```{r ppm}
+pop_vals <- as.numeric(pop_im$v); pop_vals <- pop_vals[is.finite(pop_vals)]
+pop_z    <- (pop_im - mean(pop_vals)) / sd(pop_vals)
+
+ppm_results <- cache_rds(here("data/processed/ppm_results.rds"), function() {
+  res <- list()
+  for (cat_name in categories) {
+    pp <- ppp_list[[cat_name]]
+    if (npoints(pp) >= 10) res[[cat_name]] <- ppm(pp ~ pop_z)
+  }
+  res
+})
+
+ppm_summary <- map_dfr(names(ppm_results), function(cat_name) {
+  co <- summary(ppm_results[[cat_name]])$coefs.SE.CI
+  z  <- co["pop_z", "Zval"]
+  tibble(category           = cat_name,
+         coef_pop_sd        = round(co["pop_z", "Estimate"], 3),
+         rate_ratio_per_sd  = round(exp(co["pop_z", "Estimate"]), 2),
+         z                  = round(z, 2),
+         p_value            = signif(2 * (1 - pnorm(abs(z))), 3))
+})
+saveRDS(ppm_summary, here("data/processed/ppm_summary.rds"))
+ppm_summary
+```
+
+```{r ppm-residuals, fig.width=12, fig.height=8}
+# Negative (blue) = fewer POIs than population predicts -> relative under-supply
+png(file.path(fig_dir, "ppm_residuals.png"), width = 12, height = 8,
+    units = "in", res = 200)
+par(mfrow = c(2, 3))
+for (cat_name in names(ppm_results)) {
+  plot(Smooth(residuals(ppm_results[[cat_name]], type = "raw"), sigma = 500),
+       main = paste0("PPM residuals: ", cat_name))
+  plot(aarhus_mun$geometry, add = TRUE, border = "white", lwd = 0.4)
+}
+par(mfrow = c(1, 1)); dev.off()
+knitr::include_graphics(file.path(fig_dir, "ppm_residuals.png"))
+```
+
+# 7. Spatial autocorrelation
+
+```{r hex-weights}
+hex_w <- cache_rds(here("data/processed/hex_weights.rds"), function() {
+  nb <- poly2nb(hex_analysis, queen = TRUE)
+  list(nb = nb, lw = nb2listw(nb, style = "W", zero.policy = TRUE))
+})
+lw_hex <- hex_w$lw
+cat("Hexes with zero neighbours:", sum(card(hex_w$nb) == 0), "\n")
+```
+
+```{r global-moran}
+moran_vars <- c("cov_park_800_net", "cov_library_800_net", "cov_cafe_800_net",
+                "cov_fitness_centre_800_net", "cov_community_centre_800_net",
+                "composite_count")
+
+global_moran <- map_dfr(moran_vars, function(v) {
+  vec <- as.numeric(hex_analysis[[v]]); vec[is.na(vec)] <- mean(vec, na.rm = TRUE)
+  mc <- moran.mc(vec, lw_hex, nsim = 999, zero.policy = TRUE)
+  tibble(variable = v, morans_I = round(as.numeric(mc$statistic), 3),
+         p_MC = signif(mc$p.value, 3))
+})
+global_moran
+```
+
+At ~6,000 units adjacency alone makes almost any variable significant, so the
+*magnitude* and the LISA maps below carry the finding, not the p-value.
+
+```{r lisa}
+# Variables are coverage flags / counts (high = well served), so no sign flip
+# is needed: HH = covered-among-covered (well-served core); LL = gap-among-gaps
+# (underserved cluster). FDR-corrected permutation LISA (Anselin 1995).
+classify_lisa <- function(x, lw, alpha = 0.05) {
+  x[is.na(x)] <- mean(x, na.rm = TRUE)
+  lm_res <- localmoran_perm(x, lw, nsim = 999, zero.policy = TRUE)
+  p_fdr <- p.adjust(lm_res[, "Pr(z != E(Ii))"], method = "fdr")
+  z     <- as.numeric(scale(x))
+  lag_z <- as.numeric(scale(lag.listw(lw, x, zero.policy = TRUE)))
+  cluster <- case_when(
+    p_fdr >= alpha      ~ "Not significant",
+    z >= 0 & lag_z >= 0 ~ "High-High",
+    z <  0 & lag_z <  0 ~ "Low-Low",
+    z >= 0 & lag_z <  0 ~ "High-Low",
+    z <  0 & lag_z >= 0 ~ "Low-High",
+    TRUE                ~ "Not significant")
+  factor(cluster, levels = c("High-High", "Low-Low", "High-Low",
+                             "Low-High", "Not significant"))
+}
+
+hex_lisa <- cache_rds(here("data/processed/hex_lisa.rds"), function() {
+  out <- hex_analysis
+  for (v in moran_vars)
+    out[[paste0("lisa_", v)]] <- classify_lisa(as.numeric(hex_analysis[[v]]), lw_hex)
+  out
+})
+```
+
+```{r lisa-facet, fig.width=14, fig.height=10}
+tmap_mode("plot")
+lisa_palette <- c("High-High" = "#d7191c", "Low-Low" = "#2c7bb6",
+                  "High-Low" = "#fdae61", "Low-High" = "#abd9e9",
+                  "Not significant" = "ivory2")
+facet_vars   <- paste0("lisa_", moran_vars)
+facet_labels <- c("Parks", "Libraries", "Cafés", "Fitness centres",
+                  "Community centres", "Composite (categories ≤ 800 m)")
+
+lisa_maps <- lapply(seq_along(facet_vars), function(i) {
+  tm_shape(hex_lisa) +
+    tm_polygons(facet_vars[i], palette = lisa_palette, border.col = NA,
+                showNA = FALSE, title = "LISA cluster") +
+    tm_shape(aarhus_mun) + tm_borders(col = "grey30", lwd = 0.7) +
+    tm_layout(main.title = facet_labels[i], main.title.size = 1.0,
+              legend.show = (i == length(facet_vars)), frame = FALSE)
+})
+lisa_facet <- do.call(tmap_arrange, c(lisa_maps, list(ncol = 3)))
+tmap_save(lisa_facet, file.path(fig_dir, "lisa_facet.png"),
+          width = 14, height = 10, dpi = 200)
+lisa_facet
+```
+
+```{r lisa-headline, fig.width=10, fig.height=8}
+lisa_headline <- tm_shape(hex_lisa) +
+  tm_polygons("lisa_composite_count", palette = lisa_palette, border.col = NA,
+              showNA = FALSE, title = "LISA cluster\n(count ≤ 800 m)") +
+  tm_shape(districts) + tm_borders(col = "grey30", lwd = 0.5) +
+  tm_layout(legend.outside = TRUE, frame = FALSE,
+            main.title = "Underserved (LL) vs well-served (HH) clusters",
+            main.title.size = 1.0)
+tmap_save(lisa_headline, file.path(fig_dir, "lisa_headline.png"),
+          width = 10, height = 8, dpi = 200)
+lisa_headline
+```
+
+# 8. Interactive coverage explorer (Leaflet product)
+
+```{r leaflet-prep}
+hex_wgs    <- st_transform(hex_analysis, 4326)
+parks_wgs  <- st_transform(parks_polygons, 4326)
+pois_wgs   <- st_transform(pois, 4326)
+aarhus_wgs <- st_transform(aarhus_mun, 4326)
+
+cat_colors <- c(park = "#1a9850", library = "#984ea3", cafe = "#ff7f00",
+                fitness_centre = "#e41a1c", community_centre = "#377eb8")
+cat_labels <- c(park = "Parks", library = "Libraries", cafe = "Cafés",
+                fitness_centre = "Fitness centres", community_centre = "Community centres")
+
+# Composite count (network) at each distance
+hex_wgs <- hex_wgs %>%
+  mutate(n_400_net = rowSums(across(ends_with("_400_net")), na.rm = TRUE),
+         n_800_net = rowSums(across(ends_with("_800_net")), na.rm = TRUE))
+
+pal_count <- colorNumeric("YlGnBu", domain = 0:5, na.color = "#00000000")
+```
+
+```{r leaflet-map}
+# Native Leaflet allows only one radio dimension, so distance is encoded in each
+# layer's name. Tick a category to see the hexes it covers at that distance.
+map <- leaflet(options = leafletOptions(minZoom = 10, preferCanvas = TRUE)) %>%
+  addProviderTiles("CartoDB.Positron") %>%
+  addPolygons(data = aarhus_wgs, fill = FALSE, color = "#222", weight = 1.5,
+              group = "Aarhus boundary")
+
+cov_groups <- character(0)
+
+# Composite count (toggleable), one layer per distance
+for (d in c(400, 800)) {
+  g <- paste0("Categories covered ≤", d, " m"); col <- paste0("n_", d, "_net")
+  map <- map %>% addPolygons(
+    data = hex_wgs, group = g, fillColor = pal_count(hex_wgs[[col]]),
+    fillOpacity = 0.7, stroke = FALSE,
+    label = paste0(hex_wgs[[col]], " of 5 categories ≤", d, " m"))
+  cov_groups <- c(cov_groups, g)
+}
+
+# Per-category covered hexes, one layer per (category, distance)
+for (d in c(400, 800)) for (cat in names(cat_labels)) {
+  col <- paste0("cov_", cat, "_", d, "_net")
+  covered <- hex_wgs[which(hex_wgs[[col]]), ]
+  if (nrow(covered) == 0) next
+  g <- paste0(cat_labels[[cat]], " ≤", d, " m")
+  map <- map %>% addPolygons(
+    data = covered, group = g, fillColor = cat_colors[[cat]],
+    fillOpacity = if (d == 400) 0.55 else 0.35, stroke = FALSE,
+    smoothFactor = 0.3, label = g)
+  cov_groups <- c(cov_groups, g)
+}
+
+map <- map %>%
+  addCircleMarkers(data = pois_wgs, group = "Third places (points)",
+    color = cat_colors[pois_wgs$category], radius = 3, stroke = FALSE,
+    fillOpacity = 0.85, label = ~name) %>%
+  addPolygons(data = parks_wgs, group = "Park polygons",
+    fillColor = "#1a9850", fillOpacity = 0.25, color = "#1a9850", weight = 0.8) %>%
+  addLayersControl(
+    overlayGroups = c(cov_groups, "Third places (points)",
+                      "Park polygons", "Aarhus boundary"),
+    options = layersControlOptions(collapsed = TRUE)) %>%
+  hideGroup(setdiff(c(cov_groups, "Third places (points)", "Park polygons"),
+                    "Categories covered ≤800 m")) %>%
+  addLegend(pal = pal_count, values = 0:5, opacity = 0.7,
+            title = "Categories covered (0–5)", position = "bottomright")
+
+saveWidget(map, here("output/maps/coverage_map.html"), selfcontained = TRUE)
+map
+```
+
+# 9. MAUP robustness — repeat at lokalsamfund scale
+
+If the underserved/well-served structure survives the unit change it is
+MAUP-robust (Openshaw 1984). At ~28 districts, expect weaker statistics.
+
+```{r district-analysis}
+agg_vars <- c("cov_park_800_net", "cov_library_800_net", "cov_cafe_800_net",
+              "cov_fitness_centre_800_net", "cov_community_centre_800_net",
+              "composite_count")
+
+district_an <- cache_rds(here("data/processed/district_lisa.rds"), function() {
+  dv <- hex_analysis %>% st_drop_geometry() %>% filter(!is.na(distrikt)) %>%
+    group_by(distrikt) %>%
+    summarise(across(all_of(agg_vars),
+                     ~ weighted.mean(as.numeric(.x), w = population, na.rm = TRUE)),
+              pop_total = sum(population, na.rm = TRUE), .groups = "drop")
+
+  d <- districts %>% left_join(dv, by = "distrikt") %>%
+    mutate(area_km2 = as.numeric(st_area(.)) / 1e6,
+           pop_density = pop_total / area_km2)
+
+  lw_d <- nb2listw(poly2nb(d, queen = TRUE), style = "W", zero.policy = TRUE)
+  d %>% mutate(
+    lisa_cov_park_800_net = classify_lisa(cov_park_800_net, lw_d),
+    lisa_composite_count  = classify_lisa(composite_count, lw_d))
+})
+
+cat("Districts retained:", nrow(district_an), "\n")
+```
+
+```{r maup-map, fig.width=14, fig.height=7}
+m_hex <- tm_shape(hex_lisa) +
+  tm_polygons("lisa_composite_count", palette = lisa_palette, border.col = NA,
+              showNA = FALSE, title = "Cluster") +
+  tm_shape(districts) + tm_borders(col = "grey40", lwd = 0.4) +
+  tm_layout(main.title = "Hex scale", legend.outside = TRUE, frame = FALSE)
+m_dist <- tm_shape(district_an) +
+  tm_polygons("lisa_composite_count", palette = lisa_palette,
+              border.col = "grey20", lwd = 0.4, showNA = FALSE, title = "Cluster") +
+  tm_layout(main.title = "Lokalsamfund scale", legend.outside = TRUE, frame = FALSE)
+maup_compare <- tmap_arrange(m_hex, m_dist, ncol = 2)
+tmap_save(maup_compare, file.path(fig_dir, "maup_compare.png"),
+          width = 14, height = 7, dpi = 200)
+maup_compare
+```
+
+```{r pop-density-scatter, fig.width=10, fig.height=6}
+scatter_plot <- district_an %>% st_drop_geometry() %>%
+  ggplot(aes(pop_density, composite_count, label = distrikt)) +
+  geom_point(aes(size = pop_total), alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE, colour = "steelblue") +
+  geom_text_repel(size = 3, max.overlaps = 15) +
+  scale_x_log10(labels = comma) +
+  labs(x = "Population density (people / km², log)",
+       y = "Mean count of third-place categories ≤ 800 m",
+       size = "Population", title = "Are denser districts better served?") +
+  theme_minimal()
+ggsave(file.path(fig_dir, "pop_density_scatter.png"), scatter_plot,
+       width = 10, height = 6, dpi = 200)
+scatter_plot
+```
+
+# Outputs
+
+| File | Description |
+|---|---|
+| `network_main.rds` | sfnetwork, largest component, metre edge weights |
+| `catchments_eucl.rds` | 10 Euclidean catchment polygons |
+| `hex_nearest_poi_nonpark.rds` | hex × non-park category → distance to nearest POI point (m) |
+| `hex_nearest_poi_park.rds` | hex → distance to nearest park *edge* (m); inside-park = 0 |
+| `hex_nearest_poi.rds` | the two combined |
+| `hex_coverage.rds` | hexes + network coverage flags |
+| `hex_analysis.rds` | hexes + composite + network & Euclidean flags |
+| `hex_lisa.rds`, `district_lisa.rds` | LISA clusters at both scales |
+| `ppm_summary.rds` | PPM coefficients per category |
+| `output/maps/coverage_map.html` | interactive Leaflet product |
