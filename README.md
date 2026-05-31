@@ -32,7 +32,16 @@ Tick categories in the top-right control to see which hexes they cover at 400 m 
 00_setup.Rmd          package setup
 01_get_data.Rmd       data acquisition / preprocessing
 02_analysis.Rmd       analysis + interactive map
+knitted_version/      the knitted HTML versions of analysis files
 data/processed/       inputs
 output/figures/       static maps and plots
 output/maps/          interactive Leaflet product
 ```
+
+### Rendered notebooks (code + output)
+
+The knitted `.Rmd` files, so you can read the full code and its output without running anything:
+
+-   [Setup](https://rekaforgo.github.io/Spatial_Analytics_Exam_project/knitted_version/00_setup.html)
+-   [Data acquisition](https://rekaforgo.github.io/Spatial_Analytics_Exam_project/knitted_version/01_get_data.html)
+-   [Analysis](https://rekaforgo.github.io/Spatial_Analytics_Exam_project/knitted_version/02_analysis.html)
