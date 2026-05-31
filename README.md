@@ -32,7 +32,7 @@ Tick categories in the top-right control to see which hexes they cover at 400 m 
 00_setup.Rmd          package setup
 01_get_data.Rmd       data acquisition / preprocessing
 02_analysis.Rmd       analysis + interactive map
-data/processed/        inputs (from Release; gitignored)
-output/figures/        static maps and plots
-output/maps/           interactive Leaflet product
+data/processed/       inputs
+output/figures/       static maps and plots
+output/maps/          interactive Leaflet product
 ```
