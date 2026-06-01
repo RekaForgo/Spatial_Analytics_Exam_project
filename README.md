@@ -1,6 +1,6 @@
 # Spatial Analytics Exam Project
 
-## Spatial Equity of Social Infrastructure Across Neighbourhoods in Aarhus, Denmark
+## Spatial Equality of Social Infrastructure Across Neighbourhoods in Aarhus, Denmark
 
 Project work for the **Spatial Analytics** course (Cultural Data Science elective), Aarhus University, 2026. Author: Réka Forgó.
 
